@@ -36,12 +36,27 @@
 
     const sampleAttachments = {
       script: { kind: "script", name: "雪夜旧案_分镜脚本.docx", type: "DOCX", size: "4.8 MB", icon: "file-text" },
+      script2: { kind: "script", name: "雪夜旧案_第2集分镜.docx", type: "DOCX", size: "3.9 MB", icon: "file-text" },
       other: { kind: "other", name: "雪夜旧案_小说节选.docx", type: "DOCX", size: "3.1 MB", icon: "book-open-text" },
       image: { kind: "image", name: "屋顶夜景_参考图.png", type: "PNG", size: "2.4 MB", icon: "image" },
       video: { kind: "video", name: "雨夜巷口_参考视频.mp4", type: "MP4", size: "18.6 MB", icon: "video" },
       audio: { kind: "audio", name: "低声旁白_情绪参考.wav", type: "WAV", size: "6.2 MB", icon: "audio-lines" },
       document: { kind: "document", name: "旧案背景资料.pdf", type: "PDF", size: "2.8 MB", icon: "file-search" }
     };
+    const maxAttachments = 9;
+    const attachmentLimitText = "每次最多发送 9 个文件。请先发送当前文件，或删除部分文件后再添加。";
+    const overflowDemoAttachments = [
+      sampleAttachments.script,
+      sampleAttachments.image,
+      sampleAttachments.audio,
+      sampleAttachments.document,
+      sampleAttachments.video,
+      sampleAttachments.other,
+      sampleAttachments.script2,
+      { ...sampleAttachments.image, name: "林燃_角色参考图.png", size: "1.9 MB" },
+      { ...sampleAttachments.document, name: "旧案人物关系.pdf", size: "1.4 MB" },
+      { ...sampleAttachments.audio, name: "环境音_雨夜.wav", size: "5.5 MB" }
+    ];
 
     function classifyAttachment(fileName = "") {
       const lower = fileName.toLowerCase();
@@ -59,6 +74,54 @@
       const sizeMb = file?.size ? `${Math.max(file.size / 1024 / 1024, 0.1).toFixed(1)} MB` : "已选择";
       const iconMap = { script: "file-text", other: "book-open-text", image: "image", video: "video", audio: "audio-lines", document: "file-search" };
       return { kind, name: file?.name || sampleAttachments[kind]?.name || "未命名文件", type: ext, size: sizeMb, icon: iconMap[kind] || "paperclip" };
+    }
+
+    function toAttachmentList(value) {
+      if (Array.isArray(value)) return value.filter(Boolean);
+      return value ? [value] : [];
+    }
+
+    function mergeAttachmentSelection(current, incoming) {
+      const combined = [...toAttachmentList(current), ...toAttachmentList(incoming)];
+      return {
+        items: combined.slice(0, maxAttachments),
+        overflow: Math.max(0, combined.length - maxAttachments)
+      };
+    }
+
+    function appendAttachments(current, incoming) {
+      return mergeAttachmentSelection(current, incoming).items;
+    }
+
+    function primaryAttachment(attachments) {
+      const files = toAttachmentList(attachments);
+      return files.find((file) => file.kind === "script") || files[0] || sampleAttachments.script;
+    }
+
+    function agentReceiptText(attachments) {
+      const files = toAttachmentList(attachments);
+      if (files.length <= 1) return `已收到 @${files[0]?.name || "文件"}。我先读取必要片段，做一次初步理解。`;
+      const scriptFiles = files.filter((file) => file.kind === "script");
+      if (scriptFiles.length > 0) {
+        return `已收到 ${files.length} 个文件。我看了一下，这批文件里有剧本 / 分镜脚本，也有其他附件。你希望我接下来怎么处理？`;
+      }
+      return `已收到 ${files.length} 个文件。我会先作为普通多模态素材理解，不进入剧本 / 分镜导入卡。`;
+    }
+
+    function phaseForAttachments(attachments) {
+      const files = toAttachmentList(attachments);
+      const scriptFiles = files.filter((file) => file.kind === "script");
+      if (files.length === 1 && scriptFiles.length === 1) return "initial";
+      if (files.length > 1 && scriptFiles.length > 0) return "chooseScript";
+      const first = files[0];
+      if (!first || first.kind === "document") return "mediaText";
+      if (first.kind === "other") return "otherText";
+      return "mediaText";
+    }
+
+    function kindForAttachments(attachments) {
+      const files = toAttachmentList(attachments);
+      return (files.find((file) => file.kind !== "script") || files[0] || sampleAttachments.document).kind;
     }
 
     function AttachmentChip({ attachment, status = "上传成功", onRemove }) {
@@ -85,12 +148,24 @@
       );
     }
 
-    function FileUserMessage({ attachment, text }) {
+    function AttachmentList({ attachments, status = "上传成功", onRemove }) {
+      const files = toAttachmentList(attachments);
+      return (
+        <div className="flex flex-wrap gap-2">
+          {files.map((file, index) => (
+            <AttachmentChip key={`${file.name}-${index}`} attachment={file} status={status} onRemove={onRemove ? () => onRemove(index) : undefined} />
+          ))}
+        </div>
+      );
+    }
+
+    function FileUserMessage({ attachments, attachment, text }) {
+      const files = toAttachmentList(attachments || attachment);
       return (
         <div className="flex justify-end mb-7">
           <div className="max-w-[560px] rounded-2xl bg-[#eef2ff] px-4 py-3 text-[15px] leading-7 text-ink">
             {text && <div className="mb-3">{text}</div>}
-            <AttachmentChip attachment={attachment} status="已发送" />
+            <AttachmentList attachments={files} status="已发送" />
           </div>
         </div>
       );
@@ -224,24 +299,34 @@
 
     function MediaIntentMessage({ kind, onQuickReply }) {
       const copy = {
-        image: "已读取这张参考图。我可以帮你分析角色、场景、风格，或作为后续生成参考。你想先看哪一部分？",
-        video: "已收到这段视频。我可以先查看基础信息和画面用途，例如场景氛围、节奏参考或镜头参考方向。",
-        audio: "已收到这段音频。我可以先判断它更适合作为配音参考、音乐氛围，还是项目资料。",
-        document: "已收到这份资料。我可以先帮你总结内容，或提取其中可用于角色、场景、剧情设定的信息。"
+        image: "已收到这张图片。你可以直接告诉我想怎么处理；我也可以先做基础概述。",
+        video: "已收到这段视频。你可以直接告诉我想怎么处理；我也可以先做基础概述。",
+        audio: "已收到这段音频。你可以直接告诉我想怎么处理；我也可以先做基础概述。",
+        document: "已收到这份资料。你可以直接告诉我想怎么处理；我也可以先做基础概述。"
       };
-      const replies = {
-        image: ["提取角色形象", "分析场景风格", "生成角色形象图", "设置为林燃的角色形象"],
-        video: ["查看基础信息", "提取场景参考", "设置为镜头1参考"],
-        audio: ["判断音频用途", "提取配音参考", "设置为项目音频资料"],
-        document: ["总结资料", "提取角色场景线索"]
-      };
+      const replies = ["概述内容", "提取关键信息"];
       return (
         <AgentMessage time="2026/06/17 14:23:12">
           <div>
             <div className="text-[15px] leading-7 text-slate-700">
               {copy[kind] || copy.document}
             </div>
-            <QuickReplies items={replies[kind] || replies.document} onPick={onQuickReply} />
+            <QuickReplies items={replies} onPick={onQuickReply} />
+          </div>
+        </AgentMessage>
+      );
+    }
+
+    function ChooseScriptMessage({ attachments, onQuickReply }) {
+      const prompt = "你希望我接下来怎么处理？";
+      const replies = ["导入剧本 / 分镜脚本", "改编成分镜脚本", "作为普通素材理解"];
+      return (
+        <AgentMessage time="2026/06/17 14:23:12">
+          <div>
+            <div className="text-[15px] leading-7 text-slate-700">
+              {prompt}
+            </div>
+            <QuickReplies items={replies} onPick={onQuickReply} />
           </div>
         </AgentMessage>
       );
@@ -253,13 +338,11 @@
           <div>
             <div className="text-[15px] leading-7 text-slate-700">
               <div className="font-extrabold text-ink">参考图理解结果</div>
-              <div className="mt-1">角色气质：年轻男性，压抑、警觉、带旧案创伤感。</div>
-              <div>服装线索：深色外套、微湿发丝、城市夜景反光。</div>
-              <div>画面风格：冷色霓虹、低照度、写实悬疑。</div>
-              <div>可用方向：角色形象图、海报主视觉、镜头氛围参考。</div>
-              <div className="mt-2">我可以继续基于这张图生成临时角色形象图，也可以直接把它设置到项目角色上。</div>
+              <div className="mt-1">画面元素：人物、服装、环境、光线和构图线索。</div>
+              <div>视觉线索：低照度、冷色调、城市夜景反光。</div>
+              <div>可继续提取：画面描述、风格关键词、可用提示词。</div>
             </div>
-            <QuickReplies items={["生成角色形象图", "设置为林燃的角色形象", "提取成提示词"]} onPick={onQuickReply} />
+            <QuickReplies items={["提取提示词", "继续追问"]} onPick={onQuickReply} />
           </div>
         </AgentMessage>
       );
@@ -271,11 +354,11 @@
           <div>
             <div className="text-[15px] leading-7 text-slate-700">
               <div className="font-extrabold text-ink">场景风格分析</div>
-              <div className="mt-1">空间：高楼屋顶或玻璃幕墙附近，适合做城市旧案的调查节点。</div>
-              <div>光线：低照度、冷蓝主调，人物边缘有霓虹反光。</div>
-              <div>镜头建议：中近景压迫感开场，随后推到人物眼神和手部线索。</div>
+              <div className="mt-1">空间线索：室外高处、城市背景、冷色照明。</div>
+              <div>光线线索：低照度、冷蓝主调、边缘反光。</div>
+              <div>可继续提取：场景描述、风格关键词、可用提示词。</div>
             </div>
-            <QuickReplies items={["生成同风格场景图", "设置为旧案天台场景参考"]} onPick={onQuickReply} />
+            <QuickReplies items={["提取提示词", "继续追问"]} onPick={onQuickReply} />
           </div>
         </AgentMessage>
       );
@@ -288,11 +371,10 @@
             <div className="text-[15px] leading-7 text-slate-700">
               <div className="font-extrabold text-ink">视频基础理解</div>
               <div className="mt-1">时长：约 12 秒。</div>
-              <div>画面用途：雨夜巷口、追踪、躲避。</div>
-              <div>节奏：前半段慢推，后半段急促移动。</div>
-              <div>可写回目标：镜头参考、场景参考。</div>
+              <div>画面线索：环境、人物行动、运动节奏。</div>
+              <div>可继续提取：画面描述、节奏描述、可用提示词。</div>
             </div>
-            <QuickReplies items={["设置为镜头1参考", "生成同节奏镜头提示词"]} onPick={onQuickReply} />
+            <QuickReplies items={["提取提示词", "继续追问"]} onPick={onQuickReply} />
           </div>
         </AgentMessage>
       );
@@ -304,11 +386,11 @@
           <div>
             <div className="text-[15px] leading-7 text-slate-700">
               <div className="font-extrabold text-ink">音频基础理解</div>
-              <div className="mt-1">用途判断：更适合作为低声旁白和悬疑氛围参考。</div>
-              <div>情绪关键词：压低、克制、紧张、像在避开他人监听。</div>
-              <div>P0 不展示逐字稿和说话人拆分，只做基础用途判断。</div>
+              <div className="mt-1">已读取音频文件，可以继续做基础听感概述。</div>
+              <div>P0 不展示逐字稿、说话人拆分或情绪曲线。</div>
+              <div>不会主动判断它适合做配音、音乐或旁白用途。</div>
             </div>
-            <QuickReplies items={["设置为项目音频资料", "生成旁白风格提示词"]} onPick={onQuickReply} />
+            <QuickReplies items={["概述内容", "继续追问"]} onPick={onQuickReply} />
           </div>
         </AgentMessage>
       );
@@ -320,92 +402,40 @@
           <div>
             <div className="text-[15px] leading-7 text-slate-700">
               <div className="font-extrabold text-ink">资料文档理解</div>
-              <div className="mt-1">关键信息：旧案时间线、嫌疑人证词、现场环境。</div>
-              <div>可提取对象：人物线索、场景线索、道具线索。</div>
-              <div>建议：先作为项目资料理解，不直接导入为分镜脚本。</div>
+              <div className="mt-1">可以先总结主要内容，或提取文档中的关键信息。</div>
+              <div>建议：先作为普通资料理解，不直接导入为分镜脚本。</div>
             </div>
-            <QuickReplies items={["提取角色场景线索", "设置为项目资料"]} onPick={onQuickReply} />
+            <QuickReplies items={["总结内容", "提取关键信息"]} onPick={onQuickReply} />
           </div>
         </AgentMessage>
       );
     }
 
-    function MultimodalGenerationCard({ onDone, onPause }) {
-      const [tick, setTick] = useState(0);
-      const lines = [
-        "正在对齐参考图里的冷色低照度和人物气质...",
-        "正在生成角色形象图，保持悬疑短剧质感...",
-        "正在检查面部一致性、服装细节和背景噪点..."
-      ];
-      useEffect(() => {
-        const timer = setInterval(() => setTick((v) => (v + 1) % lines.length), 2200);
-        return () => clearInterval(timer);
-      }, []);
+    function MultimodalGenerationMessage({ onDone }) {
       return (
         <AgentMessage time="2026/06/17 14:24:02">
-          <Card>
-            <CardHeader title="正在生成角色形象图" icon="sparkles" badge="临时生成" />
-            <div className="p-5 space-y-3">
-              <div className="rounded-xl border border-line bg-[#f8fbff] p-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-xs font-bold text-muted">当前进程</div>
-                    <div className="mt-1 flex items-center gap-2 font-extrabold"><span className="h-2 w-2 rounded-full bg-blue shadow-[0_0_0_4px_rgba(63,124,255,.12)]"></span>生成临时结果</div>
-                  </div>
-                  <span className="text-xs font-extrabold text-blue">处理中</span>
-                </div>
-                <div className="mt-3 h-2 rounded-full bg-slate-200 overflow-hidden">
-                  <div className="h-full w-[62%] rounded-full bg-gradient-to-r from-good to-blue"></div>
-                </div>
-              </div>
-              <div className="h-12 rounded-xl border border-line bg-white px-4 flex items-center gap-3 overflow-hidden">
-                <span className="text-xs font-extrabold text-muted shrink-0">流式输出</span>
-                <div className="min-w-0 whitespace-nowrap overflow-hidden text-sm text-slate-600 fade-left direction-rtl">
-                  <span className="inline-block direction-ltr">{lines[tick]}</span>
-                </div>
-              </div>
+          <div>
+            <div className="text-[15px] leading-7 text-slate-700">
+              收到，我会基于这张参考图生成一张临时角色形象图。生成完成后会直接发在这里；当前进度可以在生成队列里查看。
             </div>
-            <CardActions>
-              <Primary onClick={onDone} icon="check-circle-2">模拟生成完成</Primary>
-              <Secondary onClick={onPause} icon="pause">暂停生成</Secondary>
-            </CardActions>
-          </Card>
+            <QuickReplies items={["模拟生成完成"]} onPick={onDone} />
+          </div>
         </AgentMessage>
       );
     }
 
-    function GeneratedAssetCard({ onBind, onRegenerate }) {
+    function GeneratedAssetMessage({ onBind, onRegenerate }) {
       return (
         <AgentMessage time="2026/06/17 14:24:48">
-          <Card>
-            <CardHeader title="临时角色形象图" icon="image" badge="未写入项目" />
-            <div className="p-5 grid grid-cols-[220px_1fr] gap-5">
-              <div className="h-[300px] rounded-xl overflow-hidden relative bg-[radial-gradient(circle_at_45%_18%,rgba(255,255,255,.85),transparent_12%),linear-gradient(160deg,#111827_0%,#22385f_48%,#7d5cff_100%)]">
-                <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/70 to-transparent"></div>
-                <div className="absolute left-6 right-6 bottom-5 text-white">
-                  <div className="text-lg font-extrabold">林燃</div>
-                  <div className="mt-1 text-xs text-white/75">冷色夜景 · 写实悬疑 · 都市旧案</div>
-                </div>
-                <div className="absolute left-1/2 top-16 h-24 w-24 -translate-x-1/2 rounded-full bg-slate-200/90 shadow-[0_0_60px_rgba(148,163,184,.65)]"></div>
-                <div className="absolute left-1/2 top-36 h-28 w-32 -translate-x-1/2 rounded-t-[44px] bg-slate-900/80"></div>
-              </div>
-              <div className="text-sm leading-7 text-slate-700">
-                <b>生成结果说明</b>
-                <p className="mt-2">这是当前对话里的临时生成结果，还没有保存为资产，也没有写入角色。你可以继续调整，或直接设置为项目角色形象。</p>
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <Info label="匹配目标" value="林燃 / 男主" />
-                  <Info label="用途" value="角色形象图" />
-                  <Info label="风格" value="冷色夜景、低照度、写实悬疑" />
-                  <Info label="状态" value="临时结果，待确认写回" />
-                </div>
-              </div>
+          <div>
+            <div className="text-[15px] leading-7 text-slate-700">
+              已生成一张临时角色形象图。它还没有写入任何项目对象。匹配目标是林燃 / 男主，用途是角色形象图，风格为冷色夜景、低照度、写实悬疑。
             </div>
-            <CardActions>
-              <Primary onClick={onBind} icon="user-check">设置为林燃的角色形象</Primary>
-              <Secondary onClick={onRegenerate} icon="refresh-cw">重新生成</Secondary>
-              <Secondary icon="download">下载</Secondary>
-            </CardActions>
-          </Card>
+            <QuickReplies items={["设置为林燃的角色形象", "重新生成", "下载"]} onPick={(item) => {
+              if (item === "设置为林燃的角色形象") onBind?.();
+              if (item === "重新生成") onRegenerate?.();
+            }} />
+          </div>
         </AgentMessage>
       );
     }
@@ -428,7 +458,7 @@
     function BindingSuccessMessage({ target = "林燃的角色形象" }) {
       return (
         <AgentMessage time="2026/06/17 14:25:18">
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm leading-7 text-emerald-900">
+          <div className="text-[15px] leading-7 text-slate-700">
             已设置为「{target}」。后续在项目创作中可以直接引用这个内容。
           </div>
         </AgentMessage>
@@ -445,33 +475,15 @@
       );
     }
 
-    function AdaptConfirmCard({ onStart }) {
+    function AdaptConfirmMessage({ onStart }) {
       return (
         <AgentMessage time="2026/06/17 14:24:10">
-          <Card>
-            <CardHeader title="改编确认" icon="wand-sparkles" />
-            <div className="p-5 grid grid-cols-2 gap-3">
-              <Info label="项目标题" value="雪夜旧案" />
-              <Info label="题材" value="悬疑反转 / 都市旧案" />
-              <Info label="集数" value="12 集" note="可继续调整" />
-              <Info label="字数档" value="中篇（1500-2500字/集）" />
-              <Info label="目标平台" value="短视频" />
-              <Info label="视觉风格" value="写实悬疑 / 冷色夜景 / 室内低照度" />
-              <Info className="col-span-2" label="故事概览" value="围绕雪夜旧案展开短剧化改编，保留悬疑反转基调，将小说叙述压缩成可拍摄的集、片段和镜头。" />
+          <div>
+            <div className="text-[15px] leading-7 text-slate-700">
+              可以，按改编处理：项目标题「雪夜旧案」，题材为悬疑反转 / 都市旧案，目标为 12 集短视频，中篇字数档，视觉风格偏写实悬疑、冷色夜景、室内低照度。预计消耗约 260-380 积分。
             </div>
-            <div className="mx-5 mb-4 rounded-xl border border-line bg-[#f8fbff] p-4 flex items-center justify-between gap-4">
-              <div>
-                <div className="text-xs font-bold text-muted mb-1">预估消耗</div>
-                <div className="font-extrabold">约 260-380 积分</div>
-                <div className="text-xs text-muted mt-1 leading-5">改编会基于原文进行创作转换，不是原样导入。开始后可暂停。</div>
-              </div>
-              <span className="h-8 px-3 rounded-full bg-blue-50 text-blue font-extrabold text-xs flex items-center gap-2"><Icon name="zap" size={14} /> 开始前确认</span>
-            </div>
-            <CardActions>
-              <Primary onClick={onStart} icon="play">开始改编</Primary>
-              <Secondary icon="sliders-horizontal">调整目标</Secondary>
-            </CardActions>
-          </Card>
+            <QuickReplies items={["开始改编", "调整目标"]} onPick={(item) => item === "开始改编" && onStart?.()} />
+          </div>
         </AgentMessage>
       );
     }
@@ -489,67 +501,28 @@
       );
     }
 
-    function AdaptJobCard({ onPause, onDone }) {
-      const [tick, setTick] = useState(0);
-      const lines = [
-        "正在把原文情节压缩成短剧节奏...",
-        "正在补齐可拍摄的镜头动作和对白...",
-        "正在拆分每集结尾钩子并写入分镜草稿..."
-      ];
-      useEffect(() => {
-        const timer = setInterval(() => setTick((v) => (v + 1) % lines.length), 2500);
-        return () => clearInterval(timer);
-      }, []);
+    function AdaptRunningMessage({ onDone }) {
       return (
         <AgentMessage time="2026/06/17 14:24:36">
-          <Card>
-            <CardHeader title="正在改编为分镜脚本" icon="activity" badge="Agent 工作中" />
-            <div className="p-5 space-y-3">
-              <div className="rounded-xl border border-line bg-[#f8fbff] p-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-xs font-bold text-muted">当前进程</div>
-                    <div className="mt-1 flex items-center gap-2 font-extrabold"><span className="h-2 w-2 rounded-full bg-blue shadow-[0_0_0_4px_rgba(63,124,255,.12)]"></span>生成分镜草稿</div>
-                  </div>
-                  <span className="text-xs font-extrabold text-blue">处理中</span>
-                </div>
-                <div className="mt-3 h-2 rounded-full bg-slate-200 overflow-hidden">
-                  <div className="h-full w-[48%] rounded-full bg-gradient-to-r from-good to-blue"></div>
-                </div>
-              </div>
-              <div className="rounded-xl border border-line bg-[#f8fbff] p-4">
-                <div className="text-xs font-bold text-muted">完成情况</div>
-                <div className="mt-2 text-sm leading-6 text-slate-700">已完成故事拆解，正在生成第 1 集分镜；当前已生成 <b>3 / 12</b> 集草稿，形成 <b>48</b> 条分镜。</div>
-              </div>
-              <div className="h-12 rounded-xl border border-line bg-white px-4 flex items-center gap-3 overflow-hidden">
-                <span className="text-xs font-extrabold text-muted shrink-0">流式输出</span>
-                <div className="min-w-0 whitespace-nowrap overflow-hidden text-sm text-slate-600 fade-left direction-rtl">
-                  <span className="inline-block direction-ltr">{lines[tick]}</span>
-                </div>
-              </div>
+          <div>
+            <div className="text-[15px] leading-7 text-slate-700">
+              已开始改编。我会把小说叙述转成可编辑的分镜脚本，完成后直接发结果；过程不在对话里展示任务卡。
             </div>
-            <CardActions>
-              <Primary onClick={onPause} icon="pause">暂停改编</Primary>
-              <Secondary onClick={onDone} icon="check-circle-2">模拟完成</Secondary>
-            </CardActions>
-          </Card>
+            <QuickReplies items={["模拟改编完成"]} onPick={onDone} />
+          </div>
         </AgentMessage>
       );
     }
 
-    function AdaptCompleteCard({ onOpenTable }) {
+    function AdaptCompleteMessage({ onOpenTable }) {
       return (
         <AgentMessage time="2026/06/17 14:28:02">
-          <Card>
-            <CardHeader title="改编完成" icon="check-check" badge="已生成分镜" />
-            <div className="px-5 py-4 text-sm leading-7 text-slate-700">
+          <div>
+            <div className="text-[15px] leading-7 text-slate-700">
               改编完成：已生成 12 集、36 个片段、138 条分镜，并提取 8 个人物、15 个场景、24 个道具。你可以进入分镜工作台继续编辑。
             </div>
-            <CardActions>
-              <Primary onClick={onOpenTable} icon="panel-top">打开分镜工作台</Primary>
-              <Secondary icon="users">查看人物 / 场景 / 道具</Secondary>
-            </CardActions>
-          </Card>
+            <QuickReplies items={["打开分镜工作台", "查看人物 / 场景 / 道具"]} onPick={(item) => item === "打开分镜工作台" && onOpenTable?.()} />
+          </div>
         </AgentMessage>
       );
     }
@@ -557,9 +530,9 @@
     function ImportJobCard({ onPause, onFail, onDone }) {
       const [tick, setTick] = useState(0);
       const lines = [
-        "正在识别镜号、画面描述和对白边界，正在把连续段落拆成可编辑片段...",
-        "正在整理人物名称和首次出现位置，并同步提取场景与关键道具...",
-        "正在写入分镜表，世界观和正文将作为兼容内容反向生成..."
+        "...雪夜驿站内，林清蹲在尸体旁，指尖拨开半截带血的梅花枝...",
+        "...特写死者右手，指缝间夹着暗红血迹，远处灯笼被风吹得摇晃...",
+        "...镜头切到旧警局走廊，案卷从铁柜滑落，露出“雪梅案”三个字..."
       ];
       useEffect(() => {
         const timer = setInterval(() => setTick((v) => (v + 1) % lines.length), 2500);
@@ -735,7 +708,7 @@
               <SummaryRow label="理解结果" value={["imageUnderstanding", "sceneUnderstanding", "videoUnderstanding", "audioUnderstanding", "documentUnderstanding"].includes(status) ? "已输出" : "待确认"} />
               <SummaryRow label="生成结果" value={status === "generatedAsset" || status === "bindConfirm" || status === "bindSuccess" ? "已生成" : "未生成"} />
               <SummaryRow label="写回状态" value={status === "bindSuccess" ? "已绑定" : status === "bindConfirm" ? "待确认" : "未写入"} />
-              <div className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs leading-5 text-blue">素材不会自动进资产库；当用户明确设置目标后，才写入角色、场景、镜头或项目资料。</div>
+              <div className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs leading-5 text-blue">素材不会自动写入项目；当用户明确设置目标后，才写入角色、场景或镜头。</div>
             </SideCard>
           )}
           <SideCard title="兼容说明">
@@ -755,84 +728,106 @@
 
     function ChatComposer({ onSubmit }) {
       const [text, setText] = useState("");
-      const [attachment, setAttachment] = useState(null);
+      const [attachments, setAttachments] = useState([]);
+      const [limitNotice, setLimitNotice] = useState("");
       const inputRef = useRef(null);
       const submit = () => {
         const value = text.trim();
-        if (!value && !attachment) return;
-        onSubmit?.(value, attachment);
+        if (!value && attachments.length === 0) return;
+        onSubmit?.(value, attachments);
         setText("");
-        setAttachment(null);
+        setAttachments([]);
+        setLimitNotice("");
+      };
+      const addAttachments = (incoming) => {
+        setAttachments((items) => {
+          const result = mergeAttachmentSelection(items, incoming);
+          setLimitNotice(result.overflow ? attachmentLimitText : "");
+          return result.items;
+        });
       };
       const pickFile = (event) => {
-        const file = event.target.files?.[0];
-        if (file) setAttachment(attachmentFromFile(file));
+        const files = Array.from(event.target.files || []).map(attachmentFromFile);
+        if (files.length) addAttachments(files);
         event.target.value = "";
       };
       return (
         <div className="mx-auto mb-5 w-[min(900px,calc(100%-64px))] rounded-3xl border border-[#d8e4f2] bg-white shadow-soft overflow-hidden">
-          <input ref={inputRef} type="file" className="hidden" onChange={pickFile} accept=".md,.txt,.doc,.docx,.pdf,.png,.jpg,.jpeg,.webp,.mp4,.mov,.webm,.mp3,.wav,.m4a" />
-          {attachment && (
-            <div className="px-5 pt-4">
-              <AttachmentChip attachment={attachment} onRemove={() => setAttachment(null)} />
+          <input ref={inputRef} type="file" multiple className="hidden" onChange={pickFile} accept=".md,.txt,.doc,.docx,.pdf,.png,.jpg,.jpeg,.webp,.mp4,.mov,.webm,.mp3,.wav,.m4a" />
+          {attachments.length > 0 && (
+            <div className="px-5 pt-4 space-y-2">
+              <AttachmentList attachments={attachments} onRemove={(index) => {
+                setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index));
+                setLimitNotice("");
+              }} />
+              <div className="text-xs text-slate-400">已选择 {attachments.length} / {maxAttachments} 个文件</div>
+              {limitNotice && <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-bold text-rose-600">{limitNotice}</div>}
             </div>
           )}
           <textarea
             value={text}
             onChange={(event) => setText(event.target.value)}
             className="h-16 w-full resize-none outline-none px-5 pt-4 text-sm"
-            placeholder={attachment ? "补充一句指令，或直接发送文件。" : "继续和 Agent 讨论这个项目。"}
+            placeholder={attachments.length ? "补充一句指令，或直接发送这些文件。" : "继续和 Agent 讨论这个项目。"}
           ></textarea>
           <div className="h-12 px-5 flex items-center gap-4">
             <button onClick={() => inputRef.current?.click()} className="h-10 w-10 rounded-full border border-line grid place-items-center text-slate-600"><Icon name="plus" /></button>
             <button className="text-sm flex items-center gap-2 text-slate-700"><Icon name="sparkles" size={17} />Agent 模式</button>
             <button className="text-sm flex items-center gap-2 text-slate-700"><Icon name="sliders-horizontal" size={17} />模型偏好 <Icon name="chevron-down" size={14} /></button>
             <button className="text-sm flex items-center gap-2 text-slate-700"><Icon name="rectangle-horizontal" size={17} />16:9 <Icon name="chevron-down" size={14} /></button>
-            <button onClick={submit} className={`ml-auto h-10 w-10 rounded-full grid place-items-center ${text.trim() || attachment ? "bg-navy text-white" : "bg-slate-100 text-slate-400"}`}><Icon name="arrow-up" /></button>
+            <button onClick={submit} className={`ml-auto h-10 w-10 rounded-full grid place-items-center ${text.trim() || attachments.length ? "bg-navy text-white" : "bg-slate-100 text-slate-400"}`}><Icon name="arrow-up" /></button>
           </div>
         </div>
       );
     }
 
-    function ChatView({ onOpenTable, onReupload, initialKind, initialAttachment }) {
-      const mediaKinds = ["image", "video", "audio", "document"];
-      const phaseForKind = (kind) => kind === "other" ? "otherText" : (mediaKinds.includes(kind) ? "mediaText" : "initial");
-      const seedAttachment = initialAttachment || sampleAttachments[initialKind] || sampleAttachments.script;
-      const [phase, setPhase] = useState(phaseForKind(initialKind));
-      const [activeKind, setActiveKind] = useState(initialKind);
+    function ChatView({ onOpenTable, onReupload, initialKind, initialAttachments }) {
+      const seedAttachments = toAttachmentList(initialAttachments || sampleAttachments[initialKind] || sampleAttachments.script);
+      const seedPrimary = primaryAttachment(seedAttachments);
+      const [phase, setPhase] = useState(phaseForAttachments(seedAttachments));
+      const [activeKind, setActiveKind] = useState(kindForAttachments(seedAttachments));
+      const [contextAttachments, setContextAttachments] = useState(seedAttachments);
       const [bindTarget, setBindTarget] = useState("林燃的角色形象");
       const [bindSource, setBindSource] = useState("临时角色形象图");
       const [userReplies, setUserReplies] = useState([]);
       const hasAdaptDetails = (value) => /(集|字数|短视频|平台|短篇|中篇|长篇|你来建议|建议)/.test(value);
       const requestBind = (value, options = {}) => {
         if (/镜头1|镜头/.test(value)) {
-          setBindTarget("第 1 集镜头 1 的参考视频");
+          setBindTarget("第 1 集镜头 2");
           setBindSource("雨夜巷口_参考视频.mp4");
-        } else if (/音频|旁白/.test(value)) {
-          setBindTarget("项目音频资料");
-          setBindSource("低声旁白_情绪参考.wav");
         } else if (/场景/.test(value)) {
-          setBindTarget("旧案天台场景参考");
+          setBindTarget("旧案天台场景图");
           setBindSource("屋顶夜景_参考图.png");
-        } else if (/资料/.test(value)) {
-          setBindTarget("项目资料");
-          setBindSource("旧案背景资料.pdf");
         } else {
           setBindTarget("林燃的角色形象");
           setBindSource(phase === "generatedAsset" ? "临时角色形象图" : "屋顶夜景_参考图.png");
         }
         setPhase(options.needsQuestion ? "bindConfirm" : "bindSuccess");
       };
-      const handleSubmit = (value, attachment) => {
-        if (attachment) {
-          setUserReplies((items) => [...items, { text: value, attachment }]);
-          setActiveKind(attachment.kind);
-          setPhase(phaseForKind(attachment.kind));
+      const handleSubmit = (value, attachments) => {
+        const files = toAttachmentList(attachments);
+        if (files.length) {
+          setUserReplies((items) => [...items, { text: value, attachments: files }]);
+          setContextAttachments(files);
+          setActiveKind(kindForAttachments(files));
+          setPhase(phaseForAttachments(files));
           return;
         }
         setUserReplies((items) => [...items, { text: value }]);
         if (phase === "otherText" && /改|分镜|短剧/.test(value)) {
           setPhase(hasAdaptDetails(value) ? "adaptConfirm" : "adaptAskDetails");
+          return;
+        }
+        if (phase === "chooseScript" && /导入/.test(value)) {
+          setPhase("initial");
+          return;
+        }
+        if (phase === "chooseScript" && /改编/.test(value)) {
+          setPhase("adaptAskDetails");
+          return;
+        }
+        if (phase === "chooseScript" && /普通素材/.test(value)) {
+          setPhase("mediaText");
           return;
         }
         if (phase === "adaptAskDetails" && hasAdaptDetails(value)) {
@@ -846,19 +841,30 @@
           requestBind(value);
           return;
         }
-        if (/生成.*图|角色形象图|同风格场景图/.test(value)) {
+        if (/生成.*图|角色形象图|同风格场景图|生成.*镜头|根据.*镜头/.test(value)) {
           setPhase("mediaGenerating");
+          return;
+        }
+        if (/概述内容|提取关键信息|总结内容/.test(value)) {
+          const nextByKind = {
+            image: "imageUnderstanding",
+            video: "videoUnderstanding",
+            audio: "audioUnderstanding",
+            document: "documentUnderstanding",
+            other: "documentUnderstanding"
+          };
+          setPhase(nextByKind[activeKind] || "documentUnderstanding");
           return;
         }
         if (/提取角色|角色形象|提示词/.test(value)) {
           setPhase("imageUnderstanding");
           return;
         }
-        if (/分析场景|场景风格|场景参考/.test(value)) {
+        if (/分析场景|场景风格|场景氛围|场景图/.test(value)) {
           setPhase("sceneUnderstanding");
           return;
         }
-        if (/查看基础|视频|镜头参考|节奏/.test(value)) {
+        if (/查看基础|视频|生成镜头|节奏/.test(value)) {
           setPhase("videoUnderstanding");
           return;
         }
@@ -875,20 +881,21 @@
           <main className="min-h-0 grid grid-rows-[minmax(0,1fr)_auto] bg-white">
             <div className="overflow-y-auto scrollbar-thin px-16 py-10">
               <div className="max-w-[880px] mx-auto">
-                <FileUserMessage attachment={seedAttachment} text={initialKind === "script" ? "帮我导入这个分镜脚本" : ""} />
+                <FileUserMessage attachments={seedAttachments} text={seedPrimary.kind === "script" ? "帮我导入这个分镜脚本" : ""} />
                 <AgentMessage time="2026/06/17 14:23:08">
-                  <div className="text-[15px] leading-7 text-slate-700">已收到 @{seedAttachment.name}。我先读取必要片段，做一次初步理解。</div>
+                  <div className="text-[15px] leading-7 text-slate-700">{agentReceiptText(seedAttachments)}</div>
                 </AgentMessage>
                 {phase === "initial" && <InitialCard onStart={() => setPhase("running")} onReupload={onReupload} />}
+                {phase === "chooseScript" && <ChooseScriptMessage attachments={contextAttachments} onQuickReply={handleSubmit} />}
                 {phase === "otherText" && <OtherTextIntentMessage onQuickReply={handleSubmit} />}
                 {phase === "mediaText" && <MediaIntentMessage kind={activeKind} onQuickReply={handleSubmit} />}
                 {userReplies.map((reply, index) => (
-                  <React.Fragment key={`${reply.text || reply.attachment?.name}-${index}`}>
-                    {reply.attachment ? (
+                  <React.Fragment key={`${reply.text || reply.attachments?.[0]?.name}-${index}`}>
+                    {reply.attachments?.length ? (
                       <>
-                        <FileUserMessage attachment={reply.attachment} text={reply.text} />
+                        <FileUserMessage attachments={reply.attachments} text={reply.text} />
                         <AgentMessage time="2026/06/17 14:23:08">
-                          <div className="text-[15px] leading-7 text-slate-700">已收到 @{reply.attachment.name}。我先读取必要片段，做一次初步理解。</div>
+                          <div className="text-[15px] leading-7 text-slate-700">{agentReceiptText(reply.attachments)}</div>
                         </AgentMessage>
                       </>
                     ) : (
@@ -897,17 +904,16 @@
                   </React.Fragment>
                 ))}
                 {phase === "adaptAskDetails" && <AdaptDetailsQuestion onQuickReply={handleSubmit} />}
-                {phase === "adaptConfirm" && <AdaptConfirmCard onStart={() => setPhase("adaptRunning")} />}
-                {phase === "adaptRunning" && <AdaptJobCard onPause={() => setPhase("adaptPaused")} onDone={() => setPhase("adaptComplete")} />}
-                {phase === "adaptPaused" && <PauseCard onResume={() => setPhase("adaptRunning")} />}
-                {phase === "adaptComplete" && <AdaptCompleteCard onOpenTable={onOpenTable} />}
+                {phase === "adaptConfirm" && <AdaptConfirmMessage onStart={() => setPhase("adaptRunning")} />}
+                {phase === "adaptRunning" && <AdaptRunningMessage onDone={() => setPhase("adaptComplete")} />}
+                {phase === "adaptComplete" && <AdaptCompleteMessage onOpenTable={onOpenTable} />}
                 {phase === "imageUnderstanding" && <ImageUnderstandingResult onQuickReply={handleSubmit} />}
                 {phase === "sceneUnderstanding" && <SceneUnderstandingResult onQuickReply={handleSubmit} />}
                 {phase === "videoUnderstanding" && <VideoUnderstandingResult onQuickReply={handleSubmit} />}
                 {phase === "audioUnderstanding" && <AudioUnderstandingResult onQuickReply={handleSubmit} />}
                 {phase === "documentUnderstanding" && <DocumentUnderstandingResult onQuickReply={handleSubmit} />}
-                {phase === "mediaGenerating" && <MultimodalGenerationCard onPause={() => setPhase("mediaText")} onDone={() => setPhase("generatedAsset")} />}
-                {phase === "generatedAsset" && <GeneratedAssetCard onRegenerate={() => setPhase("mediaGenerating")} onBind={() => requestBind("设置为林燃的角色形象")} />}
+                {phase === "mediaGenerating" && <MultimodalGenerationMessage onDone={() => setPhase("generatedAsset")} />}
+                {phase === "generatedAsset" && <GeneratedAssetMessage onRegenerate={() => setPhase("mediaGenerating")} onBind={() => requestBind("设置为林燃的角色形象")} />}
                 {phase === "bindConfirm" && <BindingQuestionMessage target={bindTarget} source={bindSource} onQuickReply={handleSubmit} />}
                 {phase === "bindSuccess" && <BindingSuccessMessage target={bindTarget} />}
                 {phase === "running" && <ImportJobCard onPause={() => setPhase("paused")} onFail={() => setPhase("error")} onDone={() => setPhase("complete")} />}
@@ -1077,18 +1083,27 @@
 
     function Home({ onSendAttachment }) {
       const [text, setText] = useState("");
-      const [attachment, setAttachment] = useState(null);
+      const [attachments, setAttachments] = useState([]);
+      const [limitNotice, setLimitNotice] = useState("");
       const inputRef = useRef(null);
+      const addAttachments = (incoming) => {
+        setAttachments((items) => {
+          const result = mergeAttachmentSelection(items, incoming);
+          setLimitNotice(result.overflow ? attachmentLimitText : "");
+          return result.items;
+        });
+      };
       const pickFile = (event) => {
-        const file = event.target.files?.[0];
-        if (file) setAttachment(attachmentFromFile(file));
+        const files = Array.from(event.target.files || []).map(attachmentFromFile);
+        if (files.length) addAttachments(files);
         event.target.value = "";
       };
       const submit = () => {
-        if (!text.trim() && !attachment) return;
-        onSendAttachment?.(attachment || sampleAttachments.script, text.trim());
+        if (!text.trim() && attachments.length === 0) return;
+        onSendAttachment?.(attachments.length ? attachments : [sampleAttachments.script], text.trim());
         setText("");
-        setAttachment(null);
+        setAttachments([]);
+        setLimitNotice("");
       };
       return (
         <div className="h-full overflow-y-auto bg-[radial-gradient(circle_at_62%_18%,rgba(114,92,255,.10),transparent_30%),linear-gradient(180deg,#fff_0%,#f7fbff_100%)] px-14 py-12">
@@ -1097,24 +1112,29 @@
             <h1 className="mt-6 text-3xl font-extrabold">大魔术师（正式版），欢迎来到塑梦AI</h1>
             <p className="mt-3 text-muted">AI 驱动的短剧创作工厂。从灵感到成片，通过对话完成全流程。</p>
             <div className="mt-8 mx-auto w-[850px] rounded-3xl border border-[#d8e4f2] bg-white shadow-soft overflow-hidden text-left">
-              <input ref={inputRef} type="file" className="hidden" onChange={pickFile} accept=".md,.txt,.doc,.docx,.pdf,.png,.jpg,.jpeg,.webp,.mp4,.mov,.webm,.mp3,.wav,.m4a" />
-              {attachment && (
-                <div className="px-6 pt-5">
-                  <AttachmentChip attachment={attachment} onRemove={() => setAttachment(null)} />
+              <input ref={inputRef} type="file" multiple className="hidden" onChange={pickFile} accept=".md,.txt,.doc,.docx,.pdf,.png,.jpg,.jpeg,.webp,.mp4,.mov,.webm,.mp3,.wav,.m4a" />
+              {attachments.length > 0 && (
+                <div className="px-6 pt-5 space-y-2">
+                  <AttachmentList attachments={attachments} onRemove={(index) => {
+                    setAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index));
+                    setLimitNotice("");
+                  }} />
+                  <div className="text-xs text-slate-400">已选择 {attachments.length} / {maxAttachments} 个文件，可继续点击 + 追加</div>
+                  {limitNotice && <div className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-bold text-rose-600">{limitNotice}</div>}
                 </div>
               )}
               <textarea
                 value={text}
                 onChange={(event) => setText(event.target.value)}
                 className="h-36 w-full resize-none outline-none p-6"
-                placeholder={attachment ? "补充一句指令，或直接发送文件。" : "描述想法，从这里为你塑梦。"}
+                placeholder={attachments.length ? "补充一句指令，或直接发送这些文件。" : "描述想法，从这里为你塑梦。"}
               ></textarea>
               <div className="h-14 px-5 flex items-center gap-4">
                 <button onClick={() => inputRef.current?.click()} className="h-10 w-10 rounded-full border border-line grid place-items-center"><Icon name="plus" /></button>
                 <button className="text-sm flex items-center gap-2"><Icon name="sparkles" size={17} />Agent 模式</button>
                 <button className="text-sm flex items-center gap-2"><Icon name="sliders-horizontal" size={17} />模型偏好 <Icon name="chevron-down" size={14} /></button>
                 <button className="text-sm flex items-center gap-2"><Icon name="rectangle-horizontal" size={17} />16:9 <Icon name="chevron-down" size={14} /></button>
-                <button onClick={submit} className={`ml-auto h-10 w-10 rounded-full grid place-items-center ${text.trim() || attachment ? "bg-navy text-white" : "bg-slate-100 text-slate-400"}`}><Icon name="arrow-up" /></button>
+                <button onClick={submit} className={`ml-auto h-10 w-10 rounded-full grid place-items-center ${text.trim() || attachments.length ? "bg-navy text-white" : "bg-slate-100 text-slate-400"}`}><Icon name="arrow-up" /></button>
               </div>
             </div>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-3 text-sm">
@@ -1127,8 +1147,11 @@
                 ["音频参考", sampleAttachments.audio],
                 ["资料文档", sampleAttachments.document]
               ].map(([label, file]) => (
-                <button key={label} onClick={() => setAttachment(file)} className="h-9 px-4 rounded-full border border-line bg-white shadow-soft text-slate-600 inline-flex items-center gap-2"><Icon name={file.icon} size={15} />{label}</button>
+                <button key={label} onClick={() => addAttachments(file)} className="h-9 px-4 rounded-full border border-line bg-white shadow-soft text-slate-600 inline-flex items-center gap-2"><Icon name={file.icon} size={15} />{label}</button>
               ))}
+              <button onClick={() => { setLimitNotice(""); setAttachments([sampleAttachments.script, sampleAttachments.image, sampleAttachments.audio]); }} className="h-9 px-4 rounded-full border border-brand bg-white shadow-soft text-brand font-bold inline-flex items-center gap-2"><Icon name="files" size={15} />多文件组合</button>
+              <button onClick={() => { setLimitNotice(""); setAttachments([sampleAttachments.script, sampleAttachments.script2]); }} className="h-9 px-4 rounded-full border border-brand bg-white shadow-soft text-brand font-bold inline-flex items-center gap-2"><Icon name="copy-plus" size={15} />多个分镜脚本</button>
+              <button onClick={() => addAttachments(overflowDemoAttachments)} className="h-9 px-4 rounded-full border border-rose-200 bg-white shadow-soft text-rose-600 font-bold inline-flex items-center gap-2"><Icon name="circle-alert" size={15} />超过9个文件</button>
             </div>
           </div>
         </div>
@@ -1139,10 +1162,11 @@
       const initialScreen = new URLSearchParams(window.location.search).get("screen") === "storyboard" ? "table" : "home";
       const [screen, setScreen] = useState(initialScreen);
       const [importKind, setImportKind] = useState(new URLSearchParams(window.location.search).get("case") === "other" ? "other" : "script");
-      const [activeAttachment, setActiveAttachment] = useState(sampleAttachments[importKind]);
-      const handoff = (attachment = sampleAttachments.script) => {
-        setImportKind(attachment.kind || "script");
-        setActiveAttachment(attachment);
+      const [activeAttachments, setActiveAttachments] = useState([sampleAttachments[importKind]]);
+      const handoff = (attachments = [sampleAttachments.script]) => {
+        const files = toAttachmentList(attachments);
+        setImportKind(primaryAttachment(files).kind || "script");
+        setActiveAttachments(files);
         setScreen("chat");
       };
       if (screen === "table") {
@@ -1153,8 +1177,8 @@
           <Sidebar />
           <section className="min-w-0 flex-1 grid grid-rows-[56px_1fr]">
             <Topbar mode="chat" />
-            {screen === "home" && <Home onSendAttachment={(attachment) => handoff(attachment)} />}
-            {screen === "chat" && <ChatView initialKind={importKind} initialAttachment={activeAttachment} onOpenTable={() => setScreen("table")} onReupload={() => setScreen("home")} />}
+            {screen === "home" && <Home onSendAttachment={(attachments) => handoff(attachments)} />}
+            {screen === "chat" && <ChatView initialKind={importKind} initialAttachments={activeAttachments} onOpenTable={() => setScreen("table")} onReupload={() => setScreen("home")} />}
           </section>
         </div>
       );
